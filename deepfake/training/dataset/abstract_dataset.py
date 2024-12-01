@@ -10,26 +10,38 @@ import lmdb
 sys.path.append('.')
 
 import os
-import math
 import yaml
-import glob
 import json
 
 import numpy as np
 from copy import deepcopy
 import cv2
-import random
 from PIL import Image
-from collections import defaultdict
+import tqdm
+import random
 
 import torch
-from torch.autograd import Variable
 from torch.utils import data
 from torchvision import transforms as T
 
 import albumentations as A
 
 from .albu import IsotropicResize
+from .perturbations import (
+    add_gaussian_noise,
+    add_poisson_noise,
+    apply_gaussian_blur,
+    apply_median_blur,
+    adjust_brightness_contrast,
+    adjust_saturation,
+    rotate_image,
+    flip_image,
+    compress,
+    apply_chromatic_aberration,
+    apply_radial_distortion,
+    apply_elastic_transform,
+    add_snow,
+    add_fog)
 
 FFpp_pool=['FaceForensics++','FaceShifter','DeepFakeDetection','FF-DF','FF-F2F','FF-FS','FF-NT']#
 
@@ -99,6 +111,9 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             raise NotImplementedError('Only train and test modes are supported.')
 
         assert len(image_list)!=0 and len(label_list)!=0, f"Collect nothing for {mode} mode!"
+        self.perturbation = config["perturbation"]
+        self.rng = np.random.default_rng(24138745629384568293)
+
         self.image_list, self.label_list = image_list, label_list
 
 
@@ -107,8 +122,10 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             'image': self.image_list, 
             'label': self.label_list, 
         }
+
+        self.saved = False
         
-        self.transform = self.init_data_aug_method()
+        # self.transform = self.init_data_aug_method()
         
     def init_data_aug_method(self):
         trans = A.Compose([           
@@ -313,7 +330,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
                 img = cv2.imdecode(image_buf, cv2.IMREAD_COLOR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img, (size, size), interpolation=cv2.INTER_CUBIC)
-        return Image.fromarray(np.array(img, dtype=np.uint8))
+        return np.array(img, dtype=np.uint8)
 
 
     def load_mask(self, file_path):
@@ -489,6 +506,51 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             # Load the image
             try:
                 image = self.load_rgb(image_path)
+                # Apply perturbations only to fake images
+                if self.mode == 'test' and label == 1 and self.perturbation:
+                    to_save = False
+                    if not self.saved and np.random.random() > 0.98:
+                        to_save = True
+                        Image.fromarray(image).save(f"{self.perturbation}_original.jpeg")
+                        print("saved original image")
+                    if self.perturbation.startswith("gaussian-noise"):
+                        mean_std = self.perturbation.split("_")[-2:]
+                        image = add_gaussian_noise(image, float(mean_std[0]), float(mean_std[1]), self.rng)
+                    elif self.perturbation.startswith("poisson-noise"):
+                        image = add_poisson_noise(image)
+                    elif self.perturbation.startswith("gaussian-blur"):
+                        kernel_size = int(self.perturbation.split("_")[-1])
+                        image = apply_gaussian_blur(image, kernel_size)
+                    elif self.perturbation.startswith("median-blur"):
+                        kernel_size = int(self.perturbation.split("_")[-1])
+                        image = apply_median_blur(image, kernel_size)
+                    elif self.perturbation.startswith("brightness-contrast"):
+                        brightness_contrast = self.perturbation.split("_")[-2:]
+                        image = adjust_brightness_contrast(image, brightness=float(brightness_contrast[0]), contrast=float(brightness_contrast[1]))
+                    elif self.perturbation.startswith("saturation"):
+                        factor = self.perturbation.split("_")[-1]
+                        image = adjust_saturation(image, float(factor))
+                    elif self.perturbation.startswith("chromatic"):
+                        image = apply_chromatic_aberration(image)
+                    elif self.perturbation.startswith("elastic-transform"):
+                        image = apply_elastic_transform(image)
+                    elif self.perturbation.startswith("radial-distortion"):
+                        image = apply_radial_distortion(image)
+                    elif self.perturbation.startswith("compress"):
+                        quality = self.perturbation.split("_")[-1]
+                        image = compress(image, int(quality))
+                    elif self.perturbation.startswith("flip"):
+                        image = flip_image(image)
+                    elif self.perturbation.startswith("rotate"):
+                        angle = float(self.perturbation.split("_")[-1])
+                        image = rotate_image(image, angle)
+                    elif self.perturbation.startswith("snow"):
+                        image = add_snow(image)
+                    elif self.perturbation.startswith("fog"):
+                        image = add_fog(image)
+                    if not self.saved and to_save:
+                        image.save(f"{self.perturbation}.jpeg")
+                        self.saved = True
             except Exception as e:
                 # Skip this image and return the first one
                 print(f"Error loading image at index {index}: {e}")
@@ -610,7 +672,7 @@ if __name__ == "__main__":
         torch.utils.data.DataLoader(
             dataset=train_set,
             batch_size=config['train_batchSize'],
-            shuffle=True, 
+            shuffle=True,
             num_workers=0,
             collate_fn=train_set.collate_fn,
         )

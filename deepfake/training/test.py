@@ -43,6 +43,12 @@ parser.add_argument("--test_dataset", nargs="+")
 parser.add_argument('--weights_path', type=str, 
                     default='/mntcephfs/lab_data/zhiyuanyan/benchmark_results/auc_draw/cnn_aug/resnet34_2023-05-20-16-57-22/test/FaceForensics++/ckpt_epoch_9_best.pth')
 #parser.add_argument("--lmdb", action='store_true', default=False)
+parser.add_argument(
+    '--perturbation',
+    type=str,
+    default="",
+    help="Optional string for perturbation. Leave empty for no perturbation."
+)
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,8 +134,7 @@ def test_epoch(model, test_data_loaders):
         predictions_nps, label_nps, feat_nps = test_one_dataset(model, test_data_loaders[key])
         
         # compute metric for each dataset
-        metric_one_dataset = get_test_metrics(y_pred=predictions_nps, y_true=label_nps,
-                                              img_names=data_dict['image'])
+        metric_one_dataset = get_test_metrics(y_pred=predictions_nps, y_true=label_nps, img_names=data_dict['image'])
         metrics_all_datasets[key] = metric_one_dataset
         
         # info for each dataset
@@ -161,6 +166,7 @@ def main():
     if args.weights_path:
         config['weights_path'] = args.weights_path
         weights_path = args.weights_path
+    config["perturbation"] = args.perturbation
     
     # init seed
     init_seed(config)
